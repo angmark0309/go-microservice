@@ -3,16 +3,15 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/alexedwards/scs/v2"
-	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 	"log"
 	"log-service/data"
 	"net"
 	"net/http"
 	"net/rpc"
 	"time"
+
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 var client *mongo.Client
@@ -25,9 +24,7 @@ const (
 )
 
 type Config struct {
-	Session *scs.SessionManager
-	Models  data.Models
-	Etcd    *clientv3.Client
+	Models data.Models
 }
 
 func main() {
@@ -45,70 +42,37 @@ func main() {
 			panic(err)
 		}
 	}()
-
-	// Set up application configuration with session and our Models type,
-	// which allows us to interact with Mongo.
-	session := scs.New()
-	session.Lifetime = 24 * time.Hour
-	session.Cookie.Persist = true
-	session.Cookie.SameSite = http.SameSiteLaxMode
-	session.Cookie.Secure = false
-
 	app := Config{
-		Session: session,
-		Models:  data.New(client),
+		Models: data.New(client),
 	}
+	// register the RPC server
+	err = rpc.Register(new(RPCServer))
+	go app.rpcListen()
 
-	// connect to etcd and register service
-	//app.registerService()
-	//defer app.Etcd.Close()
-
-	// Start webserver in its own GoRoutine
-	go app.serve()
-
-	// Start the gRPC server in its own GoRoutine
 	go app.gRPCListen()
 
-	// Register the RPC server.
-	err = rpc.Register(new(RPCServer))
-	if err != nil {
-		return
-	}
-
-	// Listen for RPC connections on port rpcPort
-	log.Println("Starting RPC Server on port", rpcPort)
-	listen, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%s", rpcPort))
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	defer listen.Close()
-
-	// this loop executes forever, waiting for connections
-	for {
-		rpcConn, err := listen.Accept()
-		if err != nil {
-			continue
-		}
-		log.Println("Working...")
-		go rpc.ServeConn(rpcConn)
-	}
-}
-
-// serve starts the web server.
-func (app *Config) serve() {
 	srv := &http.Server{
 		Addr:    fmt.Sprintf(":%s", webPort),
 		Handler: app.routes(),
 	}
 
-	fmt.Println("--------------------------------------")
-	fmt.Println("Starting logging web service on port", webPort)
-	err := srv.ListenAndServe()
+	err = srv.ListenAndServe()
 	if err != nil {
 		log.Panic(err)
 	}
 }
+
+// func (app *Config) serve() {
+// 	srv := &http.Server{
+// 		Addr:    fmt.Sprintf(":%s", webPort),
+// 		Handler: app.routes(),
+// 	}
+
+// 	err := srv.ListenAndServe()
+// 	if err != nil {
+// 		log.Panic()
+// 	}
+// }
 
 // Connect opens a connection to the Mongo database and returns a client.
 func connectToMongo() (*mongo.Client, error) {
@@ -122,9 +86,26 @@ func connectToMongo() (*mongo.Client, error) {
 	// Connect to the MongoDB and return Client instance
 	c, err := mongo.Connect(context.TODO(), clientOptions)
 	if err != nil {
-		fmt.Println("mongo.Connect() ERROR:", err)
+		log.Println("mongo.Connect() ERROR:", err)
 		return nil, err
 	}
 
 	return c, nil
+}
+
+func (app *Config) rpcListen() error {
+	log.Println("Starting RPC server on port", rpcPort)
+	listen, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%s", rpcPort))
+	if err != nil {
+		return err
+	}
+	defer listen.Close()
+
+	for {
+		rpcConn, err := listen.Accept()
+		if err != nil {
+			continue
+		}
+		go rpc.ServeConn(rpcConn)
+	}
 }

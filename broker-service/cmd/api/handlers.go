@@ -8,12 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"log"
 	"net/http"
 	"net/rpc"
 	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 const loggerGRPCAddress = "logger-service:50001"
@@ -56,13 +56,8 @@ type MailPayload struct {
 
 // Broker is a simple test handler for the broker
 func (app *Config) Broker(w http.ResponseWriter, r *http.Request) {
-	err := app.pushToQueue("broker_hit", r.RemoteAddr)
-	if err != nil {
-		log.Println(err)
-	}
-
 	var payload jsonResponse
-	payload.Message = "Received request"
+	payload.Message = "Mark received this request"
 
 	out, _ := json.MarshalIndent(payload, "", "\t")
 	w.Header().Set("Content-Type", "application/json")
@@ -70,8 +65,6 @@ func (app *Config) Broker(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(out)
 }
 
-// HandleSubmission handles a JSON payload that describes an action to take,
-// processes it, and sends it where it needs to go
 func (app *Config) HandleSubmission(w http.ResponseWriter, r *http.Request) {
 	var requestPayload RequestPayload
 
@@ -82,89 +75,51 @@ func (app *Config) HandleSubmission(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch requestPayload.Action {
-	case "mail":
-		app.sendMail(w, requestPayload.Mail)
+
 	case "auth":
 		app.authenticate(w, requestPayload.Auth)
+
 	case "log":
 		app.logItemViaRPC(w, requestPayload.Log)
+
 	default:
 		_ = app.errorJSON(w, errors.New("unknown action"))
 	}
 }
 
-func (app *Config) logViaJSON(w http.ResponseWriter, entry LogPayload) {
+func (app *Config) logItem(w http.ResponseWriter, entry LogPayload) {
 	jsonData, _ := json.MarshalIndent(entry, "", "\t")
-	logServiceURL := "http://logger-service/log"
+	logSerivceURL := "http://logger-service/log"
 
-	request, err := http.NewRequest("POST", logServiceURL, bytes.NewBuffer(jsonData))
+	request, err := http.NewRequest("POST", logSerivceURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		app.errorJSON(w, err)
+		return
+	}
+
 	request.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{}
+
 	response, err := client.Do(request)
 	if err != nil {
-		_ = app.errorJSON(w, err, http.StatusBadRequest)
+		app.errorJSON(w, err)
 		return
 	}
 	defer response.Body.Close()
 
-	// make sure we get back the right status code
 	if response.StatusCode != http.StatusAccepted {
-		_ = app.errorJSON(w, errors.New("error calling logger service"), http.StatusBadRequest)
+		app.errorJSON(w, err)
 		return
 	}
 
-	// send json back to our end user
 	var payload jsonResponse
 	payload.Error = false
-	payload.Message = "Logged!"
-
-	_ = app.writeJSON(w, http.StatusAccepted, payload)
-}
-
-// sendMail sends an email through the mail-service. It receives a json payload
-// of type requestPayload, with MailPayload embedded.
-func (app *Config) sendMail(w http.ResponseWriter, msg MailPayload) {
-	jsonData, _ := json.MarshalIndent(msg, "", "\t")
-
-	// call the mail service; we need a request, so let's build one, and populate
-	// its body with the jsonData we just created. First we get the correct server
-	// to call from our service map.
-	//mailServiceURL := fmt.Sprintf("http://%s/send", app.GetServiceURL("mail"))
-	mailServiceURL := fmt.Sprintf("http://%s/send", "mail-service")
-
-	// now post to the mail service
-	request, err := http.NewRequest("POST", mailServiceURL, bytes.NewBuffer(jsonData))
-	request.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{}
-	response, err := client.Do(request)
-	if err != nil {
-		_ = app.errorJSON(w, err, http.StatusBadRequest)
-		return
-	}
-	defer response.Body.Close()
-
-	// make sure we get back the right status code
-	if response.StatusCode != http.StatusAccepted {
-		_ = app.errorJSON(w, errors.New("error calling mail service"), http.StatusBadRequest)
-		return
-	}
-
-	// send json back to our end user
-	var payload jsonResponse
-	payload.Error = false
-	payload.Message = "Message sent to " + msg.To
-
-	out, _ := json.MarshalIndent(payload, "", "\t")
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	_, _ = w.Write(out)
+	payload.Message = "logged"
+	app.writeJSON(w, http.StatusAccepted, payload)
 
 }
 
-// authenticate tries to log a user in through the authentication-service. It receives a json payload
-// of type requestPayload, with AuthPayload embedded.
 func (app *Config) authenticate(w http.ResponseWriter, a AuthPayload) {
 	// create json we'll send to the authentication-service
 	jsonData, _ := json.MarshalIndent(a, "", "\t")
@@ -209,15 +164,10 @@ func (app *Config) authenticate(w http.ResponseWriter, a AuthPayload) {
 
 	// did not authenticate successfully
 	if jsonFromService.Error {
-		// log it
-		_ = app.pushToQueue("authentication", fmt.Sprintf("invalid login for %s", a.Email))
 		// send error JSON back
 		_ = app.errorJSON(w, err, http.StatusUnauthorized)
 		return
 	}
-
-	// valid login, so send it to the logger service via RabbitMQ
-	_ = app.pushToQueue("authentication", fmt.Sprintf("valid login for %s", a.Email))
 
 	// send json back to our end user, with user info embedded
 	var payload jsonResponse
@@ -228,20 +178,37 @@ func (app *Config) authenticate(w http.ResponseWriter, a AuthPayload) {
 	_ = app.writeJSON(w, http.StatusAccepted, payload)
 }
 
-// logItem logs an event using the logger-service. It makes the call by pushing the data to RabbitMQ.
-func (app *Config) logItem(w http.ResponseWriter, l LogPayload) {
+func (app *Config) logEventViaRabbit(w http.ResponseWriter, l LogPayload) {
 	err := app.pushToQueue(l.Name, l.Data)
 	if err != nil {
-		log.Println(err)
-		_ = app.errorJSON(w, err)
+		app.errorJSON(w, err)
+		return
 	}
 
-	// send json back to our end user
 	var payload jsonResponse
 	payload.Error = false
-	payload.Message = "logged"
+	payload.Message = "logged via RabbitMQ"
 
-	_ = app.writeJSON(w, http.StatusAccepted, payload)
+	app.writeJSON(w, http.StatusAccepted, payload)
+}
+
+func (app *Config) pushToQueue(name, msg string) error {
+	emitter, err := event.NewEventEmitter(app.Rabbit)
+	if err != nil {
+		return err
+	}
+
+	payload := LogPayload{
+		Name: name,
+		Data: msg,
+	}
+
+	j, _ := json.MarshalIndent(&payload, "", "\t")
+	err = emitter.Push(string(j), "log.INFO")
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 type RPCPayload struct {
@@ -274,27 +241,6 @@ func (app *Config) logItemViaRPC(w http.ResponseWriter, l LogPayload) {
 	}
 
 	app.writeJSON(w, http.StatusAccepted, payload)
-}
-
-// pushToQueue pushes a message into RabbitMQ
-func (app *Config) pushToQueue(name, msg string) error {
-	emitter, err := event.NewEventEmitter(app.Rabbit)
-	if err != nil {
-		log.Println(err)
-		return err
-	}
-
-	payload := Payload{
-		Name: name,
-		Data: msg,
-	}
-
-	j, _ := json.MarshalIndent(&payload, "", "    ")
-	err = emitter.Push(string(j), "log.INFO")
-	if err != nil {
-		return err
-	}
-	return nil
 }
 
 // LogViaGRPC takes a JSON payload and logs it using gRPC as the transport

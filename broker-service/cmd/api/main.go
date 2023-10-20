@@ -1,14 +1,14 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	amqp "github.com/rabbitmq/amqp091-go"
-	clientv3 "go.etcd.io/etcd/client/v3"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"time"
+
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 // webPort the port that we listen on for api calls
@@ -17,33 +17,20 @@ const webPort = "80"
 // Config is the type we'll use as a receiver to share application
 // configuration around our app.
 type Config struct {
-	Rabbit         *amqp.Connection
-	Etcd           *clientv3.Client
-	LogServiceURLs map[string]string
-	//MailServiceURLs map[string]string
-	//AuthServiceURLs map[string]string
+	Rabbit *amqp.Connection
 }
 
 func main() {
-	// don't continue until rabbitmq is ready
-	rabbitConn, err := connectToRabbit()
+	// try to connect to RabbitMQ
+	rabbitConn, err := connect()
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 		os.Exit(1)
 	}
 	defer rabbitConn.Close()
 
-	// don't continue until etcd is ready
-	//etcConn, err := connectToEtcd()
-	//if err != nil {
-	//	fmt.Println(err)
-	//	os.Exit(1)
-	//}
-	//defer etcConn.Close()
-
 	app := Config{
 		Rabbit: rabbitConn,
-		//Etcd:   etcConn,
 	}
 
 	// get service urls
@@ -67,31 +54,35 @@ func main() {
 	}
 }
 
-// connectToRabbit tries to connect to RabbitMQ, for up to 30 seconds
-func connectToRabbit() (*amqp.Connection, error) {
-	var rabbitConn *amqp.Connection
+// connect tries to connect to RabbitMQ, and delays between attempts.
+// If we can't connect after 5 tries (with increasing delays), return an error
+func connect() (*amqp.Connection, error) {
 	var counts int64
-	var rabbitURL = os.Getenv("RABBIT_URL")
+	var backOff = 1 * time.Second
+	var connection *amqp.Connection
 
+	// don't continue until rabbitmq is ready
 	for {
-		connection, err := amqp.Dial(rabbitURL)
+		c, err := amqp.Dial("amqp://guest:guest@rabbitmq")
 		if err != nil {
-			fmt.Println("rabbitmq not ready...")
+			fmt.Println("RabbitMQ not yet ready...")
 			counts++
 		} else {
-			fmt.Println()
-			rabbitConn = connection
+			// we have a connection to rabbitmq, so set connection = c and break out of
+			// this loop
+			connection = c
 			break
 		}
 
-		if counts > 15 {
+		if counts > 5 {
+			// if we can't connect after five tries, something is wrong...
 			fmt.Println(err)
-			return nil, errors.New("cannot connect to rabbit")
+			return nil, err
 		}
-		fmt.Println("Backing off for 2 seconds...")
-		time.Sleep(2 * time.Second)
+		fmt.Printf("Backing off for %d seconds...\n", int(math.Pow(float64(counts), 2)))
+		backOff = time.Duration(math.Pow(float64(counts), 2)) * time.Second
+		time.Sleep(backOff)
 		continue
 	}
-	fmt.Println("Connected to RabbitMQ!")
-	return rabbitConn, nil
+	return connection, nil
 }

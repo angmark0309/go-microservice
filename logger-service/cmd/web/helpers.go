@@ -79,12 +79,6 @@ func (app *Config) errorJSON(w http.ResponseWriter, err error, status ...int) er
 	return app.writeJSON(w, statusCode, payload)
 }
 
-// isAuthenticated checks to see if a user is authenticated by looking for userID in session
-func (app *Config) isAuthenticated(r *http.Request) bool {
-	exists := app.Session.Exists(r.Context(), "userID")
-	return exists
-}
-
 // clientError just fires back a client error when something goes wrong (bad request)
 func (app *Config) clientError(w http.ResponseWriter, status int) {
 	log.Println("Client error with status of", status)

@@ -1,10 +1,11 @@
 package main
 
 import (
+	"net/http"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
-	"net/http"
 )
 
 func (app *Config) routes() http.Handler {
@@ -22,10 +23,6 @@ func (app *Config) routes() http.Handler {
 
 	// a heartbeat route, to ensure things are up
 	mux.Use(middleware.Heartbeat("/ping"))
-
-	// this route is just to ensure things work, and is never
-	// used after that
-	mux.Get("/", app.Broker)
 
 	mux.Post("/", app.Broker)
 

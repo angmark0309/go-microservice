@@ -119,11 +119,11 @@ func handlePayload(payload Payload) {
 
 	default:
 		// log whatever we get
-		res, err := rpcPushToLogger("LogInfo", payload)
+		err := logEvent(payload)
 		if err != nil {
 			log.Println(err)
 		}
-		fmt.Println("Response from RPC:", res)
+		fmt.Println("Successfully logged")
 	}
 }
 
